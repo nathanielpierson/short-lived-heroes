@@ -8,6 +8,7 @@ const client = new Client({
     Intents.FLAGS.GUILDS,
     Intents.FLAGS.GUILD_MESSAGES,
     Intents.FLAGS.MESSAGE_CONTENT, // Required to read message content
+    Intents.FLAGS.GUILD_MEMBERS, // Required to manage roles
   ],
 });
 
@@ -66,6 +67,71 @@ client.on('messageCreate', async (message) => {
     message.reply(`✅ I can see this channel! Channel: #${message.channel.name}`).catch(err => {
       console.error('Error replying to !test:', err);
     });
+  }
+
+  if (content === '!power') {
+    console.log('  -> Handling !power command');
+    
+    // Only works in a server (guild), not DMs
+    if (!message.guild) {
+      message.reply('This command only works in a server!').catch(err => {
+        console.error('Error replying:', err);
+      });
+      return;
+    }
+
+    try {
+      const member = await message.guild.members.fetch(message.author.id);
+      const guild = message.guild;
+
+      // Find all power roles (roles with "power" in the name, case-insensitive)
+      const powerRoles = guild.roles.cache.filter(role => 
+        role.name.toLowerCase().includes('power')
+      );
+
+      if (powerRoles.size === 0) {
+        message.reply('❌ No power roles found! Make sure you have roles with "power" in the name.').catch(err => {
+          console.error('Error replying:', err);
+        });
+        return;
+      }
+
+      // Get member's current power roles
+      const memberPowerRoles = member.roles.cache.filter(role => 
+        role.name.toLowerCase().includes('power')
+      );
+
+      // Remove all existing power roles
+      if (memberPowerRoles.size > 0) {
+        await member.roles.remove(memberPowerRoles);
+        console.log(`  -> Removed ${memberPowerRoles.size} existing power role(s)`);
+      }
+
+      // Pick a random power role
+      const powerRolesArray = Array.from(powerRoles.values());
+      const randomPowerRole = powerRolesArray[Math.floor(Math.random() * powerRolesArray.length)];
+
+      // Assign the new power role
+      await member.roles.add(randomPowerRole);
+      console.log(`  -> Assigned power role: ${randomPowerRole.name}`);
+
+      message.reply(`✨ You've been assigned the **${randomPowerRole.name}** power!`).catch(err => {
+        console.error('Error replying:', err);
+      });
+
+    } catch (error) {
+      console.error('Error handling !power command:', error);
+      
+      if (error.code === 50013) {
+        message.reply('❌ I don\'t have permission to manage roles. Make sure my role is above the power roles and I have "Manage Roles" permission.').catch(err => {
+          console.error('Error replying:', err);
+        });
+      } else {
+        message.reply('❌ An error occurred while assigning your power role.').catch(err => {
+          console.error('Error replying:', err);
+        });
+      }
+    }
   }
 });
 
