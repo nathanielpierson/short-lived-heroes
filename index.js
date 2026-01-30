@@ -3,6 +3,16 @@ dotenv.config();
 
 const { Client, Intents } = require('discord.js');
 
+// Power definitions - you can customize these
+const powerDefinitions = {
+  // Example definitions - customize these to match your actual power role names
+  'power: Super Strength': 'Attacker. Needs attacked by multiple villains/heroes to die',
+  'power: ice': 'Ice Power: You can freeze enemies and create ice barriers.',
+  'power: lightning': 'Lightning Power: You can strike with lightning and move at incredible speed.',
+  'power: pickle': 'turns you into a pickle. Funniest shit you will ever see.'
+  // Add more definitions here as you create power roles
+};
+
 const client = new Client({
   intents: [
     Intents.FLAGS.GUILDS,
@@ -196,6 +206,162 @@ client.on('messageCreate', async (message) => {
           console.error('Error replying:', err);
         });
       }
+    }
+  }
+
+  if (content.startsWith('!define')) {
+    console.log('  -> Handling !define command');
+    
+    // Only works in a server (guild), not DMs
+    if (!message.guild) {
+      message.reply('This command only works in a server!').catch(err => {
+        console.error('Error replying:', err);
+      });
+      return;
+    }
+
+    try {
+      const args = content.split(' ').slice(1); // Get everything after "!define"
+      const query = args.join(' ').toLowerCase().trim();
+
+      // Handle "!define all" - show all definitions
+      if (query === 'all') {
+        const guild = message.guild;
+        const powerRoles = guild.roles.cache.filter(role => 
+          role.name.toLowerCase().includes('power')
+        );
+
+        if (powerRoles.size === 0) {
+          message.reply('❌ No power roles found in this server!').catch(err => {
+            console.error('Error replying:', err);
+          });
+          return;
+        }
+
+        // Build the rulebook
+        let rulebook = '📖 **Power Rulebook**\n\n';
+        
+        // Get definitions for all power roles
+        const definitions = [];
+        powerRoles.forEach(role => {
+          const roleNameLower = role.name.toLowerCase();
+          // Try to find a matching definition
+          let definition = powerDefinitions[roleNameLower];
+          
+          if (!definition) {
+            const matchingKey = Object.keys(powerDefinitions).find(key => 
+              roleNameLower.includes(key.replace('power: ', '')) ||
+              key.includes(roleNameLower.replace('power', '').trim())
+            );
+            if (matchingKey) {
+              definition = powerDefinitions[matchingKey];
+            }
+          }
+          
+          if (definition) {
+            definitions.push(`**${role.name}**: ${definition}`);
+          } else {
+            definitions.push(`**${role.name}**: *No definition set yet.*`);
+          }
+        });
+
+        rulebook += definitions.join('\n\n');
+        
+        // Discord has a 2000 character limit, so split if needed
+        if (rulebook.length > 2000) {
+          // Split into chunks
+          const chunks = [];
+          let currentChunk = '📖 **Power Rulebook**\n\n';
+          
+          definitions.forEach(def => {
+            if ((currentChunk + def + '\n\n').length > 2000) {
+              chunks.push(currentChunk);
+              currentChunk = def + '\n\n';
+            } else {
+              currentChunk += def + '\n\n';
+            }
+          });
+          
+          if (currentChunk) {
+            chunks.push(currentChunk);
+          }
+          
+          // Send first chunk
+          message.reply(chunks[0]).catch(err => {
+            console.error('Error replying:', err);
+          });
+          
+          // Send remaining chunks
+          for (let i = 1; i < chunks.length; i++) {
+            message.channel.send(chunks[i]).catch(err => {
+              console.error('Error sending chunk:', err);
+            });
+          }
+        } else {
+          message.reply(rulebook).catch(err => {
+            console.error('Error replying:', err);
+          });
+        }
+        return;
+      }
+
+      // Handle specific power lookup
+      if (query.length === 0) {
+        message.reply('❌ Please specify a power or use `!define all` to see all powers.\nUsage: `!define [power name]` or `!define all`').catch(err => {
+          console.error('Error replying:', err);
+        });
+        return;
+      }
+
+      // Find matching power role
+      const guild = message.guild;
+      const powerRoles = guild.roles.cache.filter(role => 
+        role.name.toLowerCase().includes('power')
+      );
+
+      // Try to find a role that matches the query
+      const matchingRole = powerRoles.find(role => {
+        const roleNameLower = role.name.toLowerCase();
+        return roleNameLower.includes(query) || query.includes(roleNameLower.replace('power', '').trim());
+      });
+
+      if (!matchingRole) {
+        message.reply(`❌ No power role found matching "${args.join(' ')}". Use \`!define all\` to see available powers.`).catch(err => {
+          console.error('Error replying:', err);
+        });
+        return;
+      }
+
+      // Find definition for this role
+      const roleNameLower = matchingRole.name.toLowerCase();
+      let definition = powerDefinitions[roleNameLower];
+      
+      // Try fuzzy matching if exact match not found
+      if (!definition) {
+        const matchingKey = Object.keys(powerDefinitions).find(key => 
+          roleNameLower.includes(key.replace('power: ', '')) ||
+          key.includes(roleNameLower.replace('power', '').trim())
+        );
+        if (matchingKey) {
+          definition = powerDefinitions[matchingKey];
+        }
+      }
+
+      if (definition) {
+        message.reply(`📖 **${matchingRole.name}**\n\n${definition}`).catch(err => {
+          console.error('Error replying:', err);
+        });
+      } else {
+        message.reply(`📖 **${matchingRole.name}**\n\n*No definition set yet. Contact the game master to add one!*`).catch(err => {
+          console.error('Error replying:', err);
+        });
+      }
+
+    } catch (error) {
+      console.error('Error handling !define command:', error);
+      message.reply('❌ An error occurred while looking up the definition.').catch(err => {
+        console.error('Error replying:', err);
+      });
     }
   }
 });
