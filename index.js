@@ -53,6 +53,7 @@ client.on('messageCreate', async (message) => {
   // Trim whitespace and check commands
   const content = message.content.trim();
   console.log(`  Trimmed content: "${content}"`);
+  console.log(`  Checking if content starts with !power: ${content.startsWith('!power')}`);
 
   if (content === '!ping') {
     console.log('  -> Responding to !ping');
@@ -69,8 +70,11 @@ client.on('messageCreate', async (message) => {
     });
   }
 
-  if (content === '!power') {
+  if (content.startsWith('!power')) {
     console.log('  -> Handling !power command');
+    console.log(`  -> Full content: "${content}"`);
+    console.log(`  -> Mentions.users size: ${message.mentions.users.size}`);
+    console.log(`  -> Mentions.users:`, Array.from(message.mentions.users.keys()));
     
     // Only works in a server (guild), not DMs
     if (!message.guild) {
@@ -81,10 +85,38 @@ client.on('messageCreate', async (message) => {
     }
 
     try {
-      const member = await message.guild.members.fetch(message.author.id);
       const guild = message.guild;
+      const gameMaster = await guild.members.fetch(message.author.id);
 
-      // Find all power roles (roles with "power" in the name, case-insensitive)
+      // Check if user is game master (has admin permissions or a role with "game master" in the name)
+      const isGameMaster = gameMaster.permissions.has('ADMINISTRATOR') || 
+                          gameMaster.roles.cache.some(role => 
+                            role.name.toLowerCase().includes('game master') || 
+                            role.name.toLowerCase().includes('gamemaster')
+                          );
+
+      console.log(`  -> Is game master: ${isGameMaster}`);
+
+      if (!isGameMaster) {
+        message.reply('❌ Only the game master can use this command!').catch(err => {
+          console.error('Error replying:', err);
+        });
+        return;
+      }
+
+      // Get mentioned users (exclude bots and the bot itself)
+      const mentionedUsers = message.mentions.users.filter(user => !user.bot);
+      console.log(`  -> Filtered mentioned users (non-bots): ${mentionedUsers.size}`);
+      console.log(`  -> Mentioned users:`, Array.from(mentionedUsers.values()).map(u => u.tag));
+      
+      if (mentionedUsers.size === 0) {
+        message.reply('❌ Please mention the users you want to assign powers to!\nUsage: `!power @user1 @user2 @user3`').catch(err => {
+          console.error('Error replying:', err);
+        });
+        return;
+      }
+
+      // Find all power roles (roles with "power" in the name, is not case sensitive)
       const powerRoles = guild.roles.cache.filter(role => 
         role.name.toLowerCase().includes('power')
       );
@@ -96,38 +128,71 @@ client.on('messageCreate', async (message) => {
         return;
       }
 
-      // Get member's current power roles
-      const memberPowerRoles = member.roles.cache.filter(role => 
-        role.name.toLowerCase().includes('power')
-      );
-
-      // Remove all existing power roles
-      if (memberPowerRoles.size > 0) {
-        await member.roles.remove(memberPowerRoles);
-        console.log(`  -> Removed ${memberPowerRoles.size} existing power role(s)`);
+      if (powerRoles.size < mentionedUsers.size) {
+        message.reply(`❌ Not enough power roles! You have ${powerRoles.size} power role(s) but ${mentionedUsers.size} user(s) to assign.`).catch(err => {
+          console.error('Error replying:', err);
+        });
+        return;
       }
 
-      // Pick a random power role
+      // Convert power roles to array and shuffle for random assignment
       const powerRolesArray = Array.from(powerRoles.values());
-      const randomPowerRole = powerRolesArray[Math.floor(Math.random() * powerRolesArray.length)];
+      // Shuffle array using Fisher-Yates algorithm
+      for (let i = powerRolesArray.length - 1; i > 0; i--) {
+        const j = Math.floor(Math.random() * (i + 1));
+        [powerRolesArray[i], powerRolesArray[j]] = [powerRolesArray[j], powerRolesArray[i]];
+      }
 
-      // Assign the new power role
-      await member.roles.add(randomPowerRole);
-      console.log(`  -> Assigned power role: ${randomPowerRole.name}`);
+      const assignments = [];
+      console.log(`  -> Starting to fetch ${mentionedUsers.size} member(s)...`);
+      
+      const mentionedMembers = await Promise.all(
+        Array.from(mentionedUsers.values()).map(user => 
+          guild.members.fetch(user.id)
+        )
+      );
+      
+      console.log(`  -> Successfully fetched ${mentionedMembers.length} member(s)`);
 
-      message.reply(`✨ You've been assigned the **${randomPowerRole.name}** power!`).catch(err => {
+      // Assign unique powers to each user
+      console.log(`  -> Starting power assignment loop...`);
+      for (let i = 0; i < mentionedMembers.length; i++) {
+        const member = mentionedMembers[i];
+        const powerRole = powerRolesArray[i];
+
+        // Remove any existing power roles from this member
+        const memberPowerRoles = member.roles.cache.filter(role => 
+          role.name.toLowerCase().includes('power')
+        );
+        
+        if (memberPowerRoles.size > 0) {
+          await member.roles.remove(memberPowerRoles);
+          console.log(`  -> Removed existing power role(s) from ${member.user.tag}`);
+        }
+
+        // Assign the new power role
+        await member.roles.add(powerRole);
+        console.log(`  -> Assigned ${powerRole.name} to ${member.user.tag}`);
+        
+        assignments.push(`${member.user.tag}: **${powerRole.name}**`);
+      }
+
+      // Send confirmation message
+      const assignmentList = assignments.join('\n');
+      message.reply(`✨ Powers assigned!\n\n${assignmentList}`).catch(err => {
         console.error('Error replying:', err);
       });
 
     } catch (error) {
       console.error('Error handling !power command:', error);
+      console.error('Error stack:', error.stack);
       
       if (error.code === 50013) {
         message.reply('❌ I don\'t have permission to manage roles. Make sure my role is above the power roles and I have "Manage Roles" permission.').catch(err => {
           console.error('Error replying:', err);
         });
       } else {
-        message.reply('❌ An error occurred while assigning your power role.').catch(err => {
+        message.reply(`❌ An error occurred: ${error.message}`).catch(err => {
           console.error('Error replying:', err);
         });
       }
