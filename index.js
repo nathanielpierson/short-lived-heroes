@@ -22,6 +22,9 @@ const client = new Client({
   ],
 });
 
+// Store last endgame details for !endgamedetails command
+let lastEndgameDetails = null;
+
 client.once('ready', () => {
   console.log(`✅ Logged in as ${client.user.tag}`);
   console.log(`Bot is in ${client.guilds.cache.size} server(s)`);
@@ -189,9 +192,112 @@ client.on('messageCreate', async (message) => {
 
       // Send confirmation message
       const assignmentList = assignments.join('\n');
-      message.reply(`✨ Powers assigned!\n\n${assignmentList}`).catch(err => {
+      const confirmationMessage = await message.reply(`✨ Powers assigned!\n\n${assignmentList}`).catch(err => {
         console.error('Error replying:', err);
+        return null;
       });
+
+      if (confirmationMessage) {
+        // Ask about making users alive
+        const alivePrompt = await message.channel.send(
+          `If you are starting a new game, I can make sure all these users are currently alive if you'd like. Reply 👍 if you would like me to do this.`
+        ).catch(err => {
+          console.error('Error sending alive prompt:', err);
+          return null;
+        });
+
+        if (alivePrompt) {
+          // React with thumbs up
+          await alivePrompt.react('👍').catch(err => {
+            console.error('Error reacting:', err);
+          });
+
+          // Set up reaction collector
+          const filter = (reaction, user) => {
+            return reaction.emoji.name === '👍' && 
+                   user.id === message.author.id && 
+                   !user.bot;
+          };
+
+          const collector = alivePrompt.createReactionCollector({
+            filter: filter,
+            max: 1,
+            time: 60000 // 60 seconds timeout
+          });
+
+          collector.on('collect', async (reaction, user) => {
+            console.log(`  -> Game master ${user.tag} reacted with thumbs up`);
+            
+            try {
+              // Find alive and dead roles
+              const aliveRole = guild.roles.cache.find(role => 
+                role.name.toLowerCase().includes('alive')
+              );
+              
+              const deadRole = guild.roles.cache.find(role => 
+                role.name.toLowerCase().includes('dead')
+              );
+
+              if (!aliveRole && !deadRole) {
+                await message.channel.send('❌ No "alive" or "dead" roles found in this server.').catch(err => {
+                  console.error('Error sending message:', err);
+                });
+                return;
+              }
+
+              // Process each member
+              let aliveCount = 0;
+              let deadRemovedCount = 0;
+
+              for (const member of mentionedMembers) {
+                // Remove dead role if present
+                if (deadRole && member.roles.cache.has(deadRole.id)) {
+                  await member.roles.remove(deadRole).catch(err => {
+                    console.error(`Error removing dead role from ${member.user.tag}:`, err);
+                  });
+                  deadRemovedCount++;
+                }
+
+                // Add alive role if not present
+                if (aliveRole && !member.roles.cache.has(aliveRole.id)) {
+                  await member.roles.add(aliveRole).catch(err => {
+                    console.error(`Error adding alive role to ${member.user.tag}:`, err);
+                  });
+                  aliveCount++;
+                }
+              }
+
+              // Send confirmation
+              let confirmMsg = '✅ ';
+              if (aliveCount > 0) {
+                confirmMsg += `Added "alive" role to ${aliveCount} member(s). `;
+              }
+              if (deadRemovedCount > 0) {
+                confirmMsg += `Removed "dead" role from ${deadRemovedCount} member(s).`;
+              }
+              if (aliveCount === 0 && deadRemovedCount === 0) {
+                confirmMsg += 'All users already have the correct alive/dead status.';
+              }
+
+              await message.channel.send(confirmMsg).catch(err => {
+                console.error('Error sending confirmation:', err);
+              });
+
+            } catch (error) {
+              console.error('Error processing alive/dead roles:', error);
+              await message.channel.send('❌ An error occurred while setting alive/dead status.').catch(err => {
+                console.error('Error sending error message:', err);
+              });
+            }
+          });
+
+          collector.on('end', (collected, reason) => {
+            if (reason === 'time') {
+              console.log('  -> Reaction collector timed out');
+            }
+          });
+        }
+      }
 
     } catch (error) {
       console.error('Error handling !power command:', error);
@@ -471,6 +577,203 @@ client.on('messageCreate', async (message) => {
           console.error('Error replying:', err);
         });
       }
+    }
+  }
+
+  if (content === '!endgame') {
+    console.log('  -> Handling !endgame command');
+    
+    // Only works in a server (guild), not DMs
+    if (!message.guild) {
+      message.reply('This command only works in a server!').catch(err => {
+        console.error('Error replying:', err);
+      });
+      return;
+    }
+
+    try {
+      const guild = message.guild;
+      const requester = await guild.members.fetch(message.author.id);
+
+      // Check if requester is game master (has admin permissions or a role with "game master" in the name)
+      const isGameMaster = requester.permissions.has('ADMINISTRATOR') || 
+                          requester.roles.cache.some(role => 
+                            role.name.toLowerCase().includes('game master') || 
+                            role.name.toLowerCase().includes('gamemaster')
+                          );
+
+      if (!isGameMaster) {
+        message.reply('❌ Only the game master can end the game!').catch(err => {
+          console.error('Error replying:', err);
+        });
+        return;
+      }
+
+      // Find all game-related roles
+      const gameMasterRoles = guild.roles.cache.filter(role => 
+        role.name.toLowerCase() === 'game master' || 
+        role.name.toLowerCase() === 'gamemaster'
+      );
+
+      const powerRoles = guild.roles.cache.filter(role => 
+        role.name.toLowerCase().includes('power')
+      );
+
+      const aliveDeadRoles = guild.roles.cache.filter(role => 
+        role.name.toLowerCase().includes('alive') || 
+        role.name.toLowerCase().includes('dead')
+      );
+
+      // Combine all game-related roles
+      const allGameRoles = new Set([
+        ...Array.from(gameMasterRoles.values()),
+        ...Array.from(powerRoles.values()),
+        ...Array.from(aliveDeadRoles.values())
+      ]);
+
+      if (allGameRoles.size === 0) {
+        message.reply('✅ No game-related roles found. The game is already ended!').catch(err => {
+          console.error('Error replying:', err);
+        });
+        return;
+      }
+
+      // Get all members and remove game roles from them
+      const members = await guild.members.fetch();
+      let removedCount = 0;
+      
+      // Store detailed information for !endgamedetails
+      const details = {
+        roles: {}, // { roleName: [user1, user2, ...] }
+        timestamp: new Date()
+      };
+
+      for (const member of members.values()) {
+        for (const role of allGameRoles) {
+          if (member.roles.cache.has(role.id)) {
+            try {
+              await member.roles.remove(role);
+              removedCount++;
+              
+              // Store detailed info
+              if (!details.roles[role.name]) {
+                details.roles[role.name] = [];
+              }
+              details.roles[role.name].push(member.user.tag);
+              
+              console.log(`  -> Removed ${role.name} from ${member.user.tag}`);
+            } catch (error) {
+              console.error(`  -> Error removing ${role.name} from ${member.user.tag}:`, error.message);
+            }
+          }
+        }
+      }
+
+      // Store details for !endgamedetails command
+      lastEndgameDetails = details;
+
+      // Simple message
+      message.reply('✅ Applicable roles have been removed. Ready to start next game!').catch(err => {
+        console.error('Error replying:', err);
+      });
+
+      console.log(`  -> Endgame complete: Removed ${removedCount} role assignment(s)`);
+
+    } catch (error) {
+      console.error('Error handling !endgame command:', error);
+      console.error('Error stack:', error.stack);
+      
+      if (error.code === 50013) {
+        message.reply('❌ I don\'t have permission to manage roles. Make sure I have "Manage Roles" permission.').catch(err => {
+          console.error('Error replying:', err);
+        });
+      } else {
+        message.reply(`❌ An error occurred: ${error.message}`).catch(err => {
+          console.error('Error replying:', err);
+        });
+      }
+    }
+  }
+
+  if (content === '!endgamedetails') {
+    console.log('  -> Handling !endgamedetails command');
+    
+    // Only works in a server (guild), not DMs
+    if (!message.guild) {
+      message.reply('This command only works in a server!').catch(err => {
+        console.error('Error replying:', err);
+      });
+      return;
+    }
+
+    try {
+      if (!lastEndgameDetails) {
+        message.reply('❌ No endgame details available. Use `!endgame` first to end a game.').catch(err => {
+          console.error('Error replying:', err);
+        });
+        return;
+      }
+
+      // Build detailed message
+      let detailsMessage = '📋 **Last Endgame Details**\n\n';
+      
+      const roleEntries = Object.entries(lastEndgameDetails.roles);
+      
+      if (roleEntries.length === 0) {
+        detailsMessage += 'No roles were removed.';
+      } else {
+        for (const [roleName, users] of roleEntries) {
+          detailsMessage += `**${roleName}** (${users.length} member${users.length !== 1 ? 's' : ''}):\n`;
+          users.forEach(user => {
+            detailsMessage += `  • ${user}\n`;
+          });
+          detailsMessage += '\n';
+        }
+      }
+
+      // Discord has a 2000 character limit, so split if needed
+      if (detailsMessage.length > 2000) {
+        // Split into chunks
+        const chunks = [];
+        let currentChunk = '📋 **Last Endgame Details**\n\n';
+        
+        for (const [roleName, users] of roleEntries) {
+          const roleSection = `**${roleName}** (${users.length} member${users.length !== 1 ? 's' : ''}):\n${users.map(u => `  • ${u}`).join('\n')}\n\n`;
+          
+          if ((currentChunk + roleSection).length > 2000) {
+            chunks.push(currentChunk);
+            currentChunk = roleSection;
+          } else {
+            currentChunk += roleSection;
+          }
+        }
+        
+        if (currentChunk) {
+          chunks.push(currentChunk);
+        }
+        
+        // Send first chunk
+        message.reply(chunks[0]).catch(err => {
+          console.error('Error replying:', err);
+        });
+        
+        // Send remaining chunks
+        for (let i = 1; i < chunks.length; i++) {
+          message.channel.send(chunks[i]).catch(err => {
+            console.error('Error sending chunk:', err);
+          });
+        }
+      } else {
+        message.reply(detailsMessage).catch(err => {
+          console.error('Error replying:', err);
+        });
+      }
+
+    } catch (error) {
+      console.error('Error handling !endgamedetails command:', error);
+      message.reply('❌ An error occurred while retrieving endgame details.').catch(err => {
+        console.error('Error replying:', err);
+      });
     }
   }
 });
