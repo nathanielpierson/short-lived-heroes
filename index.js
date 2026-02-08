@@ -364,6 +364,115 @@ client.on('messageCreate', async (message) => {
       });
     }
   }
+
+  if (content.startsWith('!gamemaster')) {
+    console.log('  -> Handling !gamemaster command');
+    
+    // Only works in a server (guild), not DMs
+    if (!message.guild) {
+      message.reply('This command only works in a server!').catch(err => {
+        console.error('Error replying:', err);
+      });
+      return;
+    }
+
+    try {
+      const guild = message.guild;
+      const requester = await guild.members.fetch(message.author.id);
+
+      // Check if requester is game master (has admin permissions or a role with "game master" in the name)
+      const isGameMaster = requester.permissions.has('ADMINISTRATOR') || 
+                          requester.roles.cache.some(role => 
+                            role.name.toLowerCase().includes('game master') || 
+                            role.name.toLowerCase().includes('gamemaster')
+                          );
+
+      if (!isGameMaster) {
+        message.reply('❌ Only the game master can transfer game master status!').catch(err => {
+          console.error('Error replying:', err);
+        });
+        return;
+      }
+
+      // Get mentioned user
+      const mentionedUsers = message.mentions.users.filter(user => !user.bot);
+      
+      if (mentionedUsers.size === 0) {
+        message.reply('❌ Please mention the user you want to make the game master!\nUsage: `!gamemaster @username`').catch(err => {
+          console.error('Error replying:', err);
+        });
+        return;
+      }
+
+      if (mentionedUsers.size > 1) {
+        message.reply('❌ Please mention only one user!').catch(err => {
+          console.error('Error replying:', err);
+        });
+        return;
+      }
+
+      const newGameMasterUser = mentionedUsers.first();
+      const newGameMaster = await guild.members.fetch(newGameMasterUser.id);
+
+      // Find or create "Game Master" role
+      let gameMasterRole = guild.roles.cache.find(role => 
+        role.name.toLowerCase() === 'game master' || 
+        role.name.toLowerCase() === 'gamemaster'
+      );
+
+      if (!gameMasterRole) {
+        // Create the role if it doesn't exist
+        gameMasterRole = await guild.roles.create({
+          name: 'Game Master',
+          color: 0xFFD700, // Gold color
+          mentionable: false,
+          reason: 'Game Master role created by bot'
+        });
+        console.log('  -> Created Game Master role');
+      }
+
+      // Find current game master(s) with the role
+      const currentGameMasters = guild.members.cache.filter(member => 
+        member.roles.cache.has(gameMasterRole.id) && member.id !== newGameMaster.id
+      );
+
+      // Remove role from current game masters
+      if (currentGameMasters.size > 0) {
+        await Promise.all(
+          currentGameMasters.map(member => member.roles.remove(gameMasterRole))
+        );
+        console.log(`  -> Removed Game Master role from ${currentGameMasters.size} member(s)`);
+      }
+
+      // Assign role to new game master (if they don't already have it)
+      if (!newGameMaster.roles.cache.has(gameMasterRole.id)) {
+        await newGameMaster.roles.add(gameMasterRole);
+        console.log(`  -> Assigned Game Master role to ${newGameMaster.user.tag}`);
+      }
+
+      message.reply(`✅ **${newGameMaster.user.tag}** is now the Game Master!`).catch(err => {
+        console.error('Error replying:', err);
+      });
+
+    } catch (error) {
+      console.error('Error handling !gamemaster command:', error);
+      console.error('Error stack:', error.stack);
+      
+      if (error.code === 50013) {
+        message.reply('❌ I don\'t have permission to manage roles. Make sure my role is above the Game Master role and I have "Manage Roles" permission.').catch(err => {
+          console.error('Error replying:', err);
+        });
+      } else if (error.code === 50035) {
+        message.reply('❌ I cannot assign the Game Master role. Make sure my role is higher than the Game Master role in the role hierarchy.').catch(err => {
+          console.error('Error replying:', err);
+        });
+      } else {
+        message.reply(`❌ An error occurred: ${error.message}`).catch(err => {
+          console.error('Error replying:', err);
+        });
+      }
+    }
+  }
 });
 
 // Check if token exists
