@@ -100,10 +100,12 @@ client.on('messageCreate', async (message) => {
       '!commands',
       '!power',
       '!kill',
+      '!reanimate',
       '!define',
       '!gamemaster',
       '!endgame',
       '!endgamedetails',
+      '!vitals',
     ];
 
     message.reply(`Available commands:\n${commandsList.join('\n')}`).catch(err => {
@@ -644,6 +646,127 @@ client.on('messageCreate', async (message) => {
         });
       } else {
         message.reply(`❌ An error occurred while trying to kill that user: ${error.message}`).catch(err => {
+          console.error('Error replying:', err);
+        });
+      }
+    }
+  }
+
+  if (content.startsWith('!reanimate')) {
+    console.log('  -> Handling !reanimate command');
+
+    // Only works in a server (guild), not DMs
+    if (!message.guild) {
+      message.reply('This command only works in a server!').catch(err => {
+        console.error('Error replying:', err);
+      });
+      return;
+    }
+
+    try {
+      const guild = message.guild;
+      const reanimator = await guild.members.fetch(message.author.id);
+
+      // Check if user has the Reanimation power (a power role containing both "power" and "reanimation" in the name)
+      const hasReanimationPower = reanimator.roles.cache.some(role => {
+        const name = role.name.toLowerCase();
+        return name.includes('power') && name.includes('reanimation');
+      });
+
+      if (!hasReanimationPower) {
+        message.reply(`you can't do that you stupid dumb idiot`).catch(err => {
+          console.error('Error replying:', err);
+        });
+        return;
+      }
+
+      // Get mentioned user (exclude bots)
+      const mentionedUsers = message.mentions.users.filter(user => !user.bot);
+
+      if (mentionedUsers.size === 0) {
+        message.reply('❌ Please mention a user to reanimate.\nUsage: `!reanimate @user`').catch(err => {
+          console.error('Error replying:', err);
+        });
+        return;
+      }
+
+      if (mentionedUsers.size > 1) {
+        message.reply('❌ Please mention only one user to reanimate at a time.').catch(err => {
+          console.error('Error replying:', err);
+        });
+        return;
+      }
+
+      const targetUser = mentionedUsers.first();
+      const targetMember = await guild.members.fetch(targetUser.id);
+
+      // Find alive and dead roles
+      const aliveRole = guild.roles.cache.find(role =>
+        role.name.toLowerCase().includes('alive')
+      );
+      const deadRole = guild.roles.cache.find(role =>
+        role.name.toLowerCase().includes('dead')
+      );
+
+      if (!aliveRole && !deadRole) {
+        message.reply('❌ No "alive" or "dead" roles found in this server.').catch(err => {
+          console.error('Error replying:', err);
+        });
+        return;
+      }
+
+      // Only allow reanimating users who are currently in the game (have alive or dead role)
+      const isInGame =
+        (aliveRole && targetMember.roles.cache.has(aliveRole.id)) ||
+        (deadRole && targetMember.roles.cache.has(deadRole.id));
+
+      if (!isInGame) {
+        message.reply('❌ That user is not currently in the game.').catch(err => {
+          console.error('Error replying:', err);
+        });
+        return;
+      }
+
+      let removedDead = false;
+      let addedAlive = false;
+
+      // Remove dead role if present
+      if (deadRole && targetMember.roles.cache.has(deadRole.id)) {
+        await targetMember.roles.remove(deadRole).catch(err => {
+          console.error(`Error removing dead role from ${targetMember.user.tag}:`, err);
+        });
+        removedDead = true;
+      }
+
+      // Add alive role if not present
+      if (aliveRole && !targetMember.roles.cache.has(aliveRole.id)) {
+        await targetMember.roles.add(aliveRole).catch(err => {
+          console.error(`Error adding alive role to ${targetMember.user.tag}:`, err);
+        });
+        addedAlive = true;
+      }
+
+      if (!removedDead && !addedAlive) {
+        message.reply(`⚠️ ${targetMember.user.tag} already has the correct alive/dead status.`).catch(err => {
+          console.error('Error replying:', err);
+        });
+        return;
+      }
+
+      message.reply(`✨ ${targetMember.user.tag} has been reanimated.`).catch(err => {
+        console.error('Error replying:', err);
+      });
+      console.log(`  -> ${targetMember.user.tag} has been reanimated (dead removed: ${removedDead}, alive added: ${addedAlive})`);
+    } catch (error) {
+      console.error('Error handling !reanimate command:', error);
+      console.error('Error stack:', error.stack);
+
+      if (error.code === 50013) {
+        message.reply('❌ I don\'t have permission to manage roles. Make sure my role is above the Alive/Dead roles and I have "Manage Roles" permission.').catch(err => {
+          console.error('Error replying:', err);
+        });
+      } else {
+        message.reply(`❌ An error occurred while trying to reanimate that user: ${error.message}`).catch(err => {
           console.error('Error replying:', err);
         });
       }
