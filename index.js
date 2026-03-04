@@ -544,17 +544,14 @@ client.on('messageCreate', async (message) => {
       const guild = message.guild;
       const killer = await guild.members.fetch(message.author.id);
 
-      // Check if user is allowed to kill (admin, game master, or has a "killer" role)
-      const isKiller =
-        killer.permissions.has('ADMINISTRATOR') ||
-        killer.roles.cache.some(role =>
-          role.name.toLowerCase().includes('game master') ||
-          role.name.toLowerCase().includes('gamemaster') ||
-          role.name.toLowerCase().includes('killer')
-        );
+      // Check if user has the Killer power (a power role containing both "power" and "killer" in the name)
+      const hasKillerPower = killer.roles.cache.some(role => {
+        const name = role.name.toLowerCase();
+        return name.includes('power') && name.includes('killer');
+      });
 
-      if (!isKiller) {
-        message.reply('❌ Only a Killer, Game Master, or server admin can use this command!').catch(err => {
+      if (!hasKillerPower) {
+        message.reply(`you can't do that you stupid dumb idiot`).catch(err => {
           console.error('Error replying:', err);
         });
         return;
@@ -590,6 +587,18 @@ client.on('messageCreate', async (message) => {
 
       if (!aliveRole && !deadRole) {
         message.reply('❌ No "alive" or "dead" roles found in this server.').catch(err => {
+          console.error('Error replying:', err);
+        });
+        return;
+      }
+
+      // Only allow killing users who are currently in the game (have alive or dead role)
+      const isInGame =
+        (aliveRole && targetMember.roles.cache.has(aliveRole.id)) ||
+        (deadRole && targetMember.roles.cache.has(deadRole.id));
+
+      if (!isInGame) {
+        message.reply('❌ That user is not currently in the game.').catch(err => {
           console.error('Error replying:', err);
         });
         return;
