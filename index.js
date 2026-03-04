@@ -19,6 +19,7 @@ const client = new Client({
     Intents.FLAGS.GUILD_MESSAGES,
     Intents.FLAGS.MESSAGE_CONTENT, // Required to read message content
     Intents.FLAGS.GUILD_MEMBERS, // Required to manage roles
+    Intents.FLAGS.GUILD_MESSAGE_REACTIONS, // Required to detect reactions
   ],
 });
 
@@ -37,6 +38,14 @@ client.on('error', (error) => {
 
 client.on('warn', (warning) => {
   console.warn('Discord client warning:', warning);
+});
+
+// Debug: Log all reactions to see if they're being received
+client.on('messageReactionAdd', async (reaction, user) => {
+  // Only log reactions on messages we care about (to avoid spam)
+  if (reaction.message.content && reaction.message.content.includes('If you are starting a new game')) {
+    console.log(`[Reaction Event] ${user.tag} reacted with ${reaction.emoji.name} on message ${reaction.message.id}`);
+  }
 });
 
 client.on('messageCreate', async (message) => {
@@ -81,6 +90,118 @@ client.on('messageCreate', async (message) => {
     message.reply(`✅ I can see this channel! Channel: #${message.channel.name}`).catch(err => {
       console.error('Error replying to !test:', err);
     });
+  }
+
+  if (content === '!commands') {
+    console.log('  -> Responding to !commands');
+    const commandsList = [
+      '!ping',
+      '!test',
+      '!commands',
+      '!power',
+      '!kill',
+      '!define',
+      '!gamemaster',
+      '!endgame',
+      '!endgamedetails',
+    ];
+
+    message.reply(`Available commands:\n${commandsList.join('\n')}`).catch(err => {
+      console.error('Error replying to !commands:', err);
+    });
+  }
+
+  if (content === '!vitals') {
+    console.log('  -> Handling !vitals command');
+
+    if (!message.guild) {
+      message.reply('This command only works in a server!').catch(err => {
+        console.error('Error replying:', err);
+      });
+      return;
+    }
+
+    try {
+      const guild = message.guild;
+
+      // Find alive and dead roles
+      const aliveRole = guild.roles.cache.find(role =>
+        role.name.toLowerCase().includes('alive')
+      );
+      const deadRole = guild.roles.cache.find(role =>
+        role.name.toLowerCase().includes('dead')
+      );
+
+      if (!aliveRole && !deadRole) {
+        message.reply('❌ No "alive" or "dead" roles found in this server.').catch(err => {
+          console.error('Error replying:', err);
+        });
+        return;
+      }
+
+      const members = await guild.members.fetch();
+
+      // Players currently in the game: anyone with alive or dead role
+      const players = members.filter(member =>
+        (aliveRole && member.roles.cache.has(aliveRole.id)) ||
+        (deadRole && member.roles.cache.has(deadRole.id))
+      );
+
+      if (players.size === 0) {
+        message.reply('No players currently in the game.').catch(err => {
+          console.error('Error replying:', err);
+        });
+        return;
+      }
+
+      const randomInt = (min, max) =>
+        Math.floor(Math.random() * (max - min + 1)) + min;
+
+      const lines = [];
+
+      // Sort by username for consistency
+      const sortedPlayers = Array.from(players.values()).sort((a, b) =>
+        a.user.tag.localeCompare(b.user.tag)
+      );
+
+      for (const member of sortedPlayers) {
+        const isAlive = aliveRole && member.roles.cache.has(aliveRole.id);
+        const isDead = deadRole && member.roles.cache.has(deadRole.id);
+
+        let beeps = '';
+
+        if (isAlive && !isDead) {
+          // Alive: 3–6 beeps, each with 2–6 e's
+          const beepCount = randomInt(3, 6);
+          const parts = [];
+          for (let i = 0; i < beepCount; i++) {
+            const eCount = randomInt(2, 6);
+            parts.push('b' + 'e'.repeat(eCount) + 'p');
+          }
+          beeps = parts.join(' ');
+        } else if (isDead && !isAlive) {
+          // Dead: one long beep, 8–16 e's
+          const eCount = randomInt(8, 16);
+          beeps = 'b' + 'e'.repeat(eCount) + 'p';
+        } else {
+          // Both or neither: treat as unknown
+          beeps = '???';
+        }
+
+        lines.push(`${member.user.tag}: ${beeps}`);
+      }
+
+      const response = '**Vitals:**\n' + lines.join('\n');
+
+      message.reply(response).catch(err => {
+        console.error('Error replying to !vitals:', err);
+      });
+    } catch (error) {
+      console.error('Error handling !vitals command:', error);
+      message.reply('❌ An error occurred while checking vitals.').catch(err => {
+        console.error('Error replying:', err);
+      });
+    }
   }
 
   if (content.startsWith('!power')) {
@@ -207,26 +328,103 @@ client.on('messageCreate', async (message) => {
         });
 
         if (alivePrompt) {
+          // Ensure message is fetched and cached
+          try {
+            await alivePrompt.fetch();
+          } catch (err) {
+            console.error('Error fetching alive prompt:', err);
+          }
+          
           // React with thumbs up
           await alivePrompt.react('👍').catch(err => {
             console.error('Error reacting:', err);
           });
+          
+          console.log(`  -> Set up alive prompt message (ID: ${alivePrompt.id}), waiting for reaction...`);
 
+          // Store mentionedMembers in a way accessible to the reaction handler
+          const powerAssignmentMembers = [...mentionedMembers];
+          
           // Set up reaction collector
           const filter = (reaction, user) => {
-            return reaction.emoji.name === '👍' && 
-                   user.id === message.author.id && 
-                   !user.bot;
+            console.log(`  -> Filter check: reaction from ${user.tag}, emoji: ${reaction.emoji.name}, message ID: ${reaction.message.id}, target ID: ${alivePrompt.id}`);
+            
+            // Check if this reaction is on our message
+            if (reaction.message.id !== alivePrompt.id) {
+              return false;
+            }
+            
+            if (reaction.emoji.name !== '👍' || user.bot) {
+              return false;
+            }
+            
+            // Check if user is the original game master
+            if (user.id === message.author.id) {
+              console.log(`  -> Filter: User is original game master`);
+              return true;
+            }
+            
+            // Check if user is admin (using cached member if available)
+            const member = guild.members.cache.get(user.id);
+            if (member && member.permissions.has('ADMINISTRATOR')) {
+              console.log(`  -> Filter: User is admin`);
+              return true;
+            }
+            
+            // If member not in cache, allow through and check in collect handler
+            console.log(`  -> Filter: Allowing through for further check`);
+            return true;
           };
 
           const collector = alivePrompt.createReactionCollector({
             filter: filter,
-            max: 1,
             time: 60000 // 60 seconds timeout
           });
 
           collector.on('collect', async (reaction, user) => {
-            console.log(`  -> Game master ${user.tag} reacted with thumbs up`);
+            console.log(`  -> Reaction collected from ${user.tag} (${user.id})`);
+            
+            // Fetch member to check permissions
+            let member = guild.members.cache.get(user.id);
+            if (!member) {
+              member = await guild.members.fetch(user.id).catch(() => null);
+            }
+            
+            if (!member) {
+              console.log(`  -> Could not fetch member ${user.tag}`);
+              return;
+            }
+            
+            // Check if user is the original game master
+            const isOriginalGameMaster = user.id === message.author.id;
+            
+            // Check if user has Game Master role
+            const hasGameMasterRole = member.roles.cache.some(role => 
+              role.name.toLowerCase().includes('game master') || 
+              role.name.toLowerCase().includes('gamemaster')
+            );
+            
+            // Check if user is admin
+            const isAdmin = member.permissions.has('ADMINISTRATOR');
+            
+            console.log(`  -> Authorization check for ${user.tag}:`);
+            console.log(`     - Is original game master: ${isOriginalGameMaster}`);
+            console.log(`     - Has Game Master role: ${hasGameMasterRole}`);
+            console.log(`     - Is admin: ${isAdmin}`);
+            
+            const isAuthorized = isOriginalGameMaster || hasGameMasterRole || isAdmin;
+            
+            if (!isAuthorized) {
+              // Not authorized - remove their reaction and continue waiting
+              console.log(`  -> User ${user.tag} reacted but is not authorized`);
+              await reaction.users.remove(user).catch(() => {});
+              return;
+            }
+            
+            // Authorized - stop collector and process
+            collector.stop();
+            const roleType = isAdmin ? 'Admin' : (hasGameMasterRole ? 'Game Master' : 'Original Game Master');
+            console.log(`  -> ${roleType} ${user.tag} reacted with thumbs up - processing...`);
             
             try {
               // Find alive and dead roles
@@ -238,8 +436,18 @@ client.on('messageCreate', async (message) => {
                 role.name.toLowerCase().includes('dead')
               );
 
+              console.log(`  -> Found roles - Alive: ${aliveRole ? aliveRole.name : 'none'}, Dead: ${deadRole ? deadRole.name : 'none'}`);
+              console.log(`  -> Processing ${mentionedMembers.length} member(s)...`);
+
               if (!aliveRole && !deadRole) {
                 await message.channel.send('❌ No "alive" or "dead" roles found in this server.').catch(err => {
+                  console.error('Error sending message:', err);
+                });
+                return;
+              }
+              
+              if (!aliveRole) {
+                await message.channel.send('❌ No "alive" role found in this server.').catch(err => {
                   console.error('Error sending message:', err);
                 });
                 return;
@@ -249,7 +457,7 @@ client.on('messageCreate', async (message) => {
               let aliveCount = 0;
               let deadRemovedCount = 0;
 
-              for (const member of mentionedMembers) {
+              for (const member of powerAssignmentMembers) {
                 // Remove dead role if present
                 if (deadRole && member.roles.cache.has(deadRole.id)) {
                   await member.roles.remove(deadRole).catch(err => {
@@ -268,6 +476,8 @@ client.on('messageCreate', async (message) => {
               }
 
               // Send confirmation
+              console.log(`  -> Completed: Added alive to ${aliveCount}, removed dead from ${deadRemovedCount}`);
+              
               let confirmMsg = '✅ ';
               if (aliveCount > 0) {
                 confirmMsg += `Added "alive" role to ${aliveCount} member(s). `;
@@ -292,10 +502,14 @@ client.on('messageCreate', async (message) => {
           });
 
           collector.on('end', (collected, reason) => {
+            console.log(`  -> Reaction collector ended. Reason: ${reason}, Collected: ${collected.size}`);
             if (reason === 'time') {
               console.log('  -> Reaction collector timed out');
             }
           });
+          
+          // Also log when collector starts
+          console.log('  -> Reaction collector started, waiting for 👍 reaction...');
         }
       }
 
@@ -309,6 +523,118 @@ client.on('messageCreate', async (message) => {
         });
       } else {
         message.reply(`❌ An error occurred: ${error.message}`).catch(err => {
+          console.error('Error replying:', err);
+        });
+      }
+    }
+  }
+
+  if (content.startsWith('!kill')) {
+    console.log('  -> Handling !kill command');
+
+    // Only works in a server (guild), not DMs
+    if (!message.guild) {
+      message.reply('This command only works in a server!').catch(err => {
+        console.error('Error replying:', err);
+      });
+      return;
+    }
+
+    try {
+      const guild = message.guild;
+      const killer = await guild.members.fetch(message.author.id);
+
+      // Check if user is allowed to kill (admin, game master, or has a "killer" role)
+      const isKiller =
+        killer.permissions.has('ADMINISTRATOR') ||
+        killer.roles.cache.some(role =>
+          role.name.toLowerCase().includes('game master') ||
+          role.name.toLowerCase().includes('gamemaster') ||
+          role.name.toLowerCase().includes('killer')
+        );
+
+      if (!isKiller) {
+        message.reply('❌ Only a Killer, Game Master, or server admin can use this command!').catch(err => {
+          console.error('Error replying:', err);
+        });
+        return;
+      }
+
+      // Get mentioned user (exclude bots)
+      const mentionedUsers = message.mentions.users.filter(user => !user.bot);
+
+      if (mentionedUsers.size === 0) {
+        message.reply('❌ Please mention a user to kill.\nUsage: `!kill @user`').catch(err => {
+          console.error('Error replying:', err);
+        });
+        return;
+      }
+
+      if (mentionedUsers.size > 1) {
+        message.reply('❌ Please mention only one user to kill at a time.').catch(err => {
+          console.error('Error replying:', err);
+        });
+        return;
+      }
+
+      const targetUser = mentionedUsers.first();
+      const targetMember = await guild.members.fetch(targetUser.id);
+
+      // Find alive and dead roles
+      const aliveRole = guild.roles.cache.find(role =>
+        role.name.toLowerCase().includes('alive')
+      );
+      const deadRole = guild.roles.cache.find(role =>
+        role.name.toLowerCase().includes('dead')
+      );
+
+      if (!aliveRole && !deadRole) {
+        message.reply('❌ No "alive" or "dead" roles found in this server.').catch(err => {
+          console.error('Error replying:', err);
+        });
+        return;
+      }
+
+      let removedAlive = false;
+      let addedDead = false;
+
+      // Remove alive role if present
+      if (aliveRole && targetMember.roles.cache.has(aliveRole.id)) {
+        await targetMember.roles.remove(aliveRole).catch(err => {
+          console.error(`Error removing alive role from ${targetMember.user.tag}:`, err);
+        });
+        removedAlive = true;
+      }
+
+      // Add dead role if not present
+      if (deadRole && !targetMember.roles.cache.has(deadRole.id)) {
+        await targetMember.roles.add(deadRole).catch(err => {
+          console.error(`Error adding dead role to ${targetMember.user.tag}:`, err);
+        });
+        addedDead = true;
+      }
+
+      if (!removedAlive && !addedDead) {
+        message.reply(`⚠️ ${targetMember.user.tag} already has the correct alive/dead status.`).catch(err => {
+          console.error('Error replying:', err);
+        });
+        return;
+      }
+
+      message.reply(`💀 ${targetMember.user.tag} has been killed.`).catch(err => {
+        console.error('Error replying:', err);
+      });
+      console.log(`  -> ${targetMember.user.tag} has been killed (alive removed: ${removedAlive}, dead added: ${addedDead})`);
+    } catch (error) {
+      console.error('Error handling !kill command:', error);
+      console.error('Error stack:', error.stack);
+
+      if (error.code === 50013) {
+        message.reply('❌ I don\'t have permission to manage roles. Make sure my role is above the Alive/Dead roles and I have "Manage Roles" permission.').catch(err => {
+          console.error('Error replying:', err);
+        });
+      } else {
+        message.reply(`❌ An error occurred while trying to kill that user: ${error.message}`).catch(err => {
           console.error('Error replying:', err);
         });
       }
